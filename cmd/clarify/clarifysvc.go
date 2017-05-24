@@ -98,6 +98,7 @@ func (p *program) pollJob(stopped chan<- struct{}) chan<- bool {
 				}
 			case <-done:
 				ticker.Stop()
+				return
 			}
 		}
 	}(done)
