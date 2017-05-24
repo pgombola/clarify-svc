@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 )
 
 type program struct {
-	install  string
+	clarify  string
 	hostname string
 	nomad    *client.NomadServer
 	launch   string
@@ -36,26 +37,37 @@ func (p *program) Stop(s service.Service) error {
 	node := p.node()
 	status, err := client.Drain(p.nomad, node.ID, true)
 	if err != nil {
-		p.logger.Error("Error enabling node-drain.")
+		p.logger.Error("error enabling node-drain.")
 		return err
 	}
 	if status != http.StatusOK {
-		p.logger.Errorf("Error enable node-drain; returned %v status code.", s)
+		p.logger.Errorf("error enable node-drain; returned %v status code.", s)
 		return errors.New("error enabling node-drain")
 	}
-
 	return nil
 }
 
 func (p *program) run() {
-	waitForInstall(p.install, p.logger)
-	if _, err := client.FindJob(p.nomad, "clarify"); err == nil {
+	if found := waitForInstall(p.clarify, p.exit, p.logger); !found {
+		p.logger.Error("clarify install not available")
+		return
+	}
+	_, err := client.FindJob(p.nomad, "clarify")
+	if err == nil {
+		p.logger.Info("clarify found")
 		node := p.node()
 		if node.Drain {
+			p.logger.Info("disabling drain")
 			p.disableDrain(node.ID)
 		}
+		p.logger.Infof("drain disabled (name=%s;id=%s)", node.Name, node.ID)
 	} else {
-		p.launchClarify()
+		p.logger.Info("launching clarify")
+		_, err := p.launchClarify()
+		if err != nil {
+			p.logger.Error(err)
+			os.Exit(1)
+		}
 	}
 	stopped := make(chan struct{})
 	done := p.pollJob(stopped)
@@ -69,51 +81,49 @@ func (p *program) run() {
 
 func (p *program) pollJob(stopped chan<- struct{}) chan<- bool {
 	done := make(chan bool)
-	go func() {
-		jobNotExists := func() bool {
-			_, err := client.FindJob(p.nomad, "clarify")
-			return err == nil
-		}
+	go func(done <-chan bool) {
 		ticker := time.NewTicker(5 * time.Second)
 		for {
 			select {
 			case <-ticker.C:
-				if jobNotExists() {
-					p.logger.Error("Clarify job not found.")
+				if _, err := client.FindJob(p.nomad, "clarify"); err != nil {
+					p.logger.Error("clarify job not found")
 					ticker.Stop()
-					close(done)
+					stopped <- struct{}{}
+				}
+				if _, err := client.HostID(p.nomad, &p.hostname); err != nil {
+					p.logger.Info("node drained")
+					ticker.Stop()
 					stopped <- struct{}{}
 				}
 			case <-done:
 				ticker.Stop()
 			}
 		}
-	}()
+	}(done)
 	return done
 }
 
-func (p *program) launchClarify() {
-	s, err := client.SubmitJob(p.nomad, strings.Join([]string{p.install, p.launch}, string(filepath.Separator)))
+func (p *program) launchClarify() (bool, error) {
+	s, err := client.SubmitJob(p.nomad, strings.Join([]string{p.clarify, p.launch}, string(filepath.Separator)))
 	if err != nil {
-		p.logger.Error("Error launching Clarify.")
-		p.logger.Error(err)
-		os.Exit(1)
+		return false, err
 	}
 	if s != http.StatusOK {
-		p.logger.Errorf("Error launching Clarify; returned %v status code.", s)
-		os.Exit(1)
+		return false, fmt.Errorf("http status: %v", s)
 	}
+	return true, nil
 }
 
 func (p *program) node() *client.Host {
 	hostname, err := os.Hostname()
 	if err != nil {
-		p.logger.Error("Unable to retrieve hostname")
+		p.logger.Error("unable to retrieve hostname")
 		os.Exit(1)
 	}
 	node, err := client.HostID(p.nomad, &hostname)
 	if err != nil {
-		p.logger.Errorf("Error retrieving node")
+		p.logger.Errorf("error retrieving node")
 		p.logger.Error(err)
 		os.Exit(1)
 	}
@@ -123,36 +133,61 @@ func (p *program) node() *client.Host {
 func (p *program) disableDrain(id string) {
 	s, err := client.Drain(p.nomad, id, false)
 	if err != nil {
-		p.logger.Error("Error disabling drain.")
+		p.logger.Error("error disabling drain")
 		p.logger.Error(err)
 		os.Exit(1)
 	}
 	if s != http.StatusOK {
-		p.logger.Errorf("Error disabling drain; returned %v status.", s)
+		p.logger.Errorf("error disabling drain; returned %v status", s)
 		os.Exit(1)
 	}
 }
 
-func waitForInstall(path string, log service.Logger) {
-	shareNotExists := func() bool {
-		_, err := os.Stat(path)
-		return os.IsNotExist(err)
+func waitForInstall(path string, exit <-chan struct{}, log service.Logger) bool {
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		log.Info("found clarify install directory")
+		return true
 	}
-	for shareNotExists() {
-		log.Warning("Share not mounted; waiting.")
-		time.Sleep(10 * time.Second)
+	found := make(chan bool)
+	defer close(found)
+	go func(found chan<- bool) {
+		ticker := time.NewTicker(5 * time.Second)
+		for {
+			select {
+			case <-ticker.C:
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					ticker.Stop()
+					found <- true
+					return
+				}
+				log.Warning("clarify install not available; waiting")
+			case <-exit:
+				ticker.Stop()
+				found <- false
+				return
+			}
+		}
+	}(found)
+	select {
+	case f := <-found:
+		return f
 	}
 }
 
+func isInstall(control *string) bool {
+	return len(*control) != 0 && *control == "install"
+}
+
 func main() {
-	control := flag.String("control", "", fmt.Sprintf("Service control command[%q].", service.ControlAction))
-	install := flag.String("install", "", "The location of Clarify install directory.")
-	port := flag.Int("nomadport", 4646, "Port of local Nomad instance.")
+	control := flag.String("control", "", fmt.Sprintf("Service control command %q.", service.ControlAction))
+	clarify := flag.String("clarify", "", "The location of Clarify install directory.")
+	nomad := flag.String("nomad", ":4646", "Address:Port of Nomad instance.")
 	launch := flag.String("launch", "launch_clarify.json", "Filename of Clarify job specification.")
+
 	flag.Parse()
 
-	if len(*install) == 0 {
-		log.Fatal("install locaton must be provided")
+	if (isInstall(control) || len(*control) == 0) && len(*clarify) == 0 {
+		log.Fatal("clarify locaton must be provided")
 	}
 
 	// Program
@@ -162,10 +197,15 @@ func main() {
 		if err != nil {
 			log.Fatal("error retrieving hostname")
 		}
+		addressPort := strings.Split(*nomad, ":")
+		if len(addressPort[0]) == 0 {
+			addressPort[0] = "localhost"
+		}
+		port, _ := strconv.Atoi(addressPort[1])
 		prg = &program{
-			install:  *install,
+			clarify:  *clarify,
 			hostname: hostname,
-			nomad:    &client.NomadServer{Address: "localhost", Port: *port},
+			nomad:    &client.NomadServer{Address: addressPort[0], Port: port},
 			launch:   *launch,
 			exit:     make(chan struct{}),
 		}
@@ -175,10 +215,10 @@ func main() {
 	var s service.Service
 	{
 		svcConfig := &service.Config{
-			Name:         "Clarify",
+			Name:         "Clarify2",
 			DisplayName:  "Clarify Service",
-			Description:  "Controls the Clarify application.",
-			Arguments:    []string{"-install", *install},
+			Description:  "Clarify",
+			Arguments:    []string{fmt.Sprintf("-clarify=%v", *clarify)},
 			Dependencies: []string{"clarify-consul, clarify-nomad"},
 		}
 		s, _ = service.New(prg, svcConfig)
@@ -211,7 +251,7 @@ func main() {
 	// Run control command or start program
 	if len(*control) != 0 {
 		if err := service.Control(s, *control); err != nil {
-			log.Fatalf("error running %s command", *control)
+			log.Fatal(err)
 		}
 		return
 	}
