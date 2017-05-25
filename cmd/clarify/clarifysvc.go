@@ -23,6 +23,7 @@ type program struct {
 	launch   string
 	exit     chan struct{}
 	logger   service.Logger
+	svc      service.Service
 }
 
 func (p *program) Start(s service.Service) error {
@@ -32,8 +33,7 @@ func (p *program) Start(s service.Service) error {
 }
 
 func (p *program) Stop(s service.Service) error {
-	p.logger.Info("Stopping Clarify")
-	p.exit <- struct{}{}
+	close(p.exit)
 	node := p.node()
 	status, err := client.Drain(p.nomad, node.ID, true)
 	if err != nil {
@@ -44,11 +44,12 @@ func (p *program) Stop(s service.Service) error {
 		p.logger.Errorf("error enable node-drain; returned %v status code.", s)
 		return errors.New("error enabling node-drain")
 	}
+	p.logger.Info("Stopped Clarify")
 	return nil
 }
 
 func (p *program) run() {
-	if found := waitForInstall(p.clarify, p.exit, p.logger); !found {
+	if found := p.waitForInstall(); !found {
 		p.logger.Error("clarify install not available")
 		return
 	}
@@ -66,22 +67,20 @@ func (p *program) run() {
 		_, err := p.launchClarify()
 		if err != nil {
 			p.logger.Error(err)
+			// Exit will allow the service to restart
 			os.Exit(1)
 		}
 	}
-	stopped := make(chan struct{})
-	done := p.pollJob(stopped)
+	stopped := p.pollJob()
 	select {
 	case <-stopped:
-		os.Exit(1)
-	case <-p.exit:
-		close(done)
+		p.svc.Stop()
 	}
 }
 
-func (p *program) pollJob(stopped chan<- struct{}) chan<- bool {
-	done := make(chan bool)
-	go func(done <-chan bool) {
+func (p *program) pollJob() <-chan struct{} {
+	stopped := make(chan struct{})
+	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		for {
 			select {
@@ -89,20 +88,20 @@ func (p *program) pollJob(stopped chan<- struct{}) chan<- bool {
 				if _, err := client.FindJob(p.nomad, "clarify"); err != nil {
 					p.logger.Error("clarify job not found")
 					ticker.Stop()
-					stopped <- struct{}{}
+					close(stopped)
 				}
-				if _, err := client.HostID(p.nomad, &p.hostname); err != nil {
+				n, err := client.HostID(p.nomad, &p.hostname)
+				if err != nil {
+					p.logger.Warning("error retrieving node")
+				} else if n.Drain {
 					p.logger.Info("node drained")
 					ticker.Stop()
-					stopped <- struct{}{}
+					close(stopped)
 				}
-			case <-done:
-				ticker.Stop()
-				return
 			}
 		}
-	}(done)
-	return done
+	}()
+	return stopped
 }
 
 func (p *program) launchClarify() (bool, error) {
@@ -136,17 +135,15 @@ func (p *program) disableDrain(id string) {
 	if err != nil {
 		p.logger.Error("error disabling drain")
 		p.logger.Error(err)
-		os.Exit(1)
 	}
 	if s != http.StatusOK {
 		p.logger.Errorf("error disabling drain; returned %v status", s)
-		os.Exit(1)
 	}
 }
 
-func waitForInstall(path string, exit <-chan struct{}, log service.Logger) bool {
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		log.Info("found clarify install directory")
+func (p *program) waitForInstall() bool {
+	if _, err := os.Stat(p.clarify); !os.IsNotExist(err) {
+		p.logger.Info("found clarify install directory")
 		return true
 	}
 	found := make(chan bool)
@@ -156,13 +153,13 @@ func waitForInstall(path string, exit <-chan struct{}, log service.Logger) bool 
 		for {
 			select {
 			case <-ticker.C:
-				if _, err := os.Stat(path); !os.IsNotExist(err) {
+				if _, err := os.Stat(p.clarify); !os.IsNotExist(err) {
 					ticker.Stop()
 					found <- true
 					return
 				}
-				log.Warning("clarify install not available; waiting")
-			case <-exit:
+				p.logger.Warning("clarify install not available; waiting")
+			case <-p.exit:
 				ticker.Stop()
 				found <- false
 				return
@@ -216,36 +213,20 @@ func main() {
 	var s service.Service
 	{
 		svcConfig := &service.Config{
-			Name:         "Clarify2",
-			DisplayName:  "Clarify Service",
-			Description:  "Clarify",
+			Name:         "clarify",
+			DisplayName:  "clarify",
+			Description:  "clarify service",
 			Arguments:    []string{fmt.Sprintf("-clarify=%v", *clarify)},
-			Dependencies: []string{"clarify-consul, clarify-nomad"},
+			Dependencies: []string{"clarify-consul", "clarify-nomad"},
 		}
 		s, _ = service.New(prg, svcConfig)
+		prg.svc = s
 	}
 
 	// Logging
 	var logger service.Logger
 	{
-		wd, _ := filepath.Abs(filepath.Dir(os.Args[0]))
-		name := strings.Join([]string{wd, "clarifysvc.log"}, string(filepath.Separator))
-		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
-		if err != nil {
-
-		}
-		defer f.Close()
-		log.SetOutput(f)
-		errs := make(chan error, 5)
-		logger, _ = s.Logger(errs)
-		go func() {
-			for {
-				err := <-errs
-				if err != nil {
-					log.Println(err)
-				}
-			}
-		}()
+		logger, _ = s.Logger(nil)
 		prg.logger = logger
 	}
 
