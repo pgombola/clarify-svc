@@ -1,0 +1,65 @@
+{
+	"ImportPath": "github.com/pgombola/clarify-svc",
+	"GoVersion": "go1.8",
+	"GodepVersion": "v79",
+	"Packages": [
+		"./cmd/clarify/"
+	],
+	"Deps": [
+		{
+			"ImportPath": "github.com/go-kit/kit/log",
+			"Comment": "v0.4.0-30-gd0853ee",
+			"Rev": "d0853eec8cfdfc051ef0b6a19f502d6f1d322c33"
+		},
+		{
+			"ImportPath": "github.com/go-logfmt/logfmt",
+			"Comment": "v0.3.0",
+			"Rev": "390ab7935ee28ec6b286364bba9b4dd6410cb3d5"
+		},
+		{
+			"ImportPath": "github.com/go-stack/stack",
+			"Comment": "v1.5.2",
+			"Rev": "100eb0c0a9c5b306ca2fb4f165df21d80ada4b82"
+		},
+		{
+			"ImportPath": "github.com/hashicorp/go-cleanhttp",
+			"Rev": "3573b8b52aa7b37b9358d966a898feb387f62437"
+		},
+		{
+			"ImportPath": "github.com/hashicorp/go-retryablehttp",
+			"Rev": "2d5f5dbd904dbad432492c3ca2c12c72c9e3045a"
+		},
+		{
+			"ImportPath": "github.com/kardianos/service",
+			"Rev": "f6635a45eccea31fd54922e3c1bf7e5e5a5df097"
+		},
+		{
+			"ImportPath": "github.com/kr/logfmt",
+			"Rev": "b84e30acd515aadc4b783ad4ff83aff3299bdfe0"
+		},
+		{
+			"ImportPath": "github.com/pgombola/gomad/client",
+			"Rev": "12c8dbf8e7adabc11918a12a3f86adfadd92f460"
+		},
+		{
+			"ImportPath": "golang.org/x/sys/windows",
+			"Rev": "9ccfe848b9db8435a24c424abbc07a921adf1df5"
+		},
+		{
+			"ImportPath": "golang.org/x/sys/windows/registry",
+			"Rev": "9ccfe848b9db8435a24c424abbc07a921adf1df5"
+		},
+		{
+			"ImportPath": "golang.org/x/sys/windows/svc",
+			"Rev": "9ccfe848b9db8435a24c424abbc07a921adf1df5"
+		},
+		{
+			"ImportPath": "golang.org/x/sys/windows/svc/eventlog",
+			"Rev": "9ccfe848b9db8435a24c424abbc07a921adf1df5"
+		},
+		{
+			"ImportPath": "golang.org/x/sys/windows/svc/mgr",
+			"Rev": "9ccfe848b9db8435a24c424abbc07a921adf1df5"
+		}
+	]
+}
