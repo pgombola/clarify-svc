@@ -31,7 +31,7 @@
 		},
 		{
 			"ImportPath": "github.com/kardianos/service",
-			"Rev": "f6635a45eccea31fd54922e3c1bf7e5e5a5df097"
+			"Rev": "9fd0a14ebb76a5191862bc39e7fcb9aeea03743c"
 		},
 		{
 			"ImportPath": "github.com/kr/logfmt",
