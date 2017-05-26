@@ -7,11 +7,9 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path"
 	"path/filepath"
 	"runtime"
-	"syscall"
 
 	"github.com/kardianos/service"
 )
@@ -22,10 +20,11 @@ type consul struct {
 	path    string
 	config  string
 	cmd     *exec.Cmd
+	exit    chan struct{}
 }
 
 func (p *consul) Start(s service.Service) error {
-	p.logger.Infof("Starting Clarify-Consul\n(exe=%s,config=%s)", p.path, p.config)
+	p.logger.Infof("Starting Clarify-Consul(exe=%s,config=%s)", p.path, p.config)
 	p.cmd = exec.Command(p.path, "agent", "-config-file", p.config)
 	if *p.verbose {
 		p.cmd.Stdout = os.Stdout
@@ -37,6 +36,7 @@ func (p *consul) Start(s service.Service) error {
 
 func (p *consul) Stop(s service.Service) error {
 	p.logger.Info("Stopping Clarify-Consul")
+	close(p.exit)
 	// https://github.com/golang/go/issues/6720
 	if runtime.GOOS == "windows" {
 		if err := p.cmd.Process.Kill(); err != nil {
@@ -63,8 +63,10 @@ func (p *consul) run() {
 			os.Exit(1)
 		default:
 			p.logger.Info("Consul process exited gracefully.")
-			os.Exit(0)
+			os.Exit(1)
 		}
+	case <-p.exit:
+		return
 	}
 }
 
@@ -102,51 +104,53 @@ func main() {
 	verbose := flag.Bool("v", false, "Logs verbose output from the Consul process to consul.")
 	flag.Parse()
 
-	svcConfig := &service.Config{
-		Name:        "Clarify-Consul",
-		DisplayName: "Clarify Consul Service",
-		Description: "This service starts Consul for use by Clarify.",
-	}
-
-	wd, err := filepath.Abs(filepath.Dir(os.Args[0]))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	exe, _ := findFile(wd, "consul*")
-	config, _ := findFile(wd, *cfg)
-
-	prg := &consul{
-		path:    exe,
-		verbose: verbose,
-		config:  config,
-	}
-	s, err := service.New(prg, svcConfig)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	logger, err := s.Logger(nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	prg.logger = logger
-
-	if len(*control) > 0 {
-		err := service.Control(s, *control)
+	// Program
+	var prg *consul
+	{
+		wd, err := filepath.Abs(filepath.Dir(os.Args[0]))
 		if err != nil {
-			logger.Error(err)
+			log.Fatal(err)
+		}
+		exe, _ := findFile(wd, "consul*")
+		config, _ := findFile(wd, *cfg)
+		prg = &consul{
+			path:    exe,
+			verbose: verbose,
+			config:  config,
+			exit:    make(chan struct{}, 1),
+		}
+	}
+
+	// Service
+	var s service.Service
+	{
+		svcConfig := &service.Config{
+			Name:        "clarify-consul",
+			DisplayName: "clarify-consul",
+			Description: "clarify-consul service",
+			Arguments:   []string{"-cfg", *cfg},
+		}
+		s, _ = service.New(prg, svcConfig)
+	}
+
+	// Logging
+	var logger service.Logger
+	{
+		var err error
+		logger, err = s.Logger(nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		prg.logger = logger
+	}
+
+	// Run control command or start program
+	if len(*control) != 0 {
+		if err := service.Control(s, *control); err != nil {
+			log.Fatal(err)
 		}
 		return
 	}
-	sigchan := make(chan os.Signal)
-	signal.Notify(sigchan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		select {
-		case <-sigchan:
-			prg.Stop(s)
-		}
-	}()
 	if err := s.Run(); err != nil {
 		logger.Error(err)
 	}
