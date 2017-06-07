@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/kardianos/service"
 )
@@ -18,6 +19,7 @@ type nomad struct {
 	logger  service.Logger
 	verbose *bool
 	path    string
+	data    string
 	config  string
 	cmd     *exec.Cmd
 	exit    chan struct{}
@@ -25,7 +27,7 @@ type nomad struct {
 
 func (p *nomad) Start(s service.Service) error {
 	p.logger.Infof("Starting Clarify-Nomad(exe=%s,config=%s)", p.path, p.config)
-	p.cmd = exec.Command(p.path, "agent", fmt.Sprintf("-config=%s", p.config))
+	p.cmd = exec.Command(p.path, "agent", fmt.Sprintf("-config=%s", p.config), fmt.Sprintf("-data-dir=%s", p.data))
 	if *p.verbose {
 		p.cmd.Stdout = os.Stdout
 		p.cmd.Stderr = os.Stderr
@@ -98,6 +100,27 @@ func findFile(dir string, name string) (result string, err error) {
 	return
 }
 
+func cleanup(data string) {
+	// Remove data/client/alloc directory: http://github.com/hashicorp/nomad/issues/2560
+	allocDir := strings.Join([]string{data, "client", "alloc"}, string(os.PathSeparator))
+	if err := os.RemoveAll(allocDir); err != nil {
+		log.Fatalf("unable to remove alloc dir (%s)", allocDir)
+	}
+	// We remove client-id and secret-id to force nomad to think we're a new client
+	clientID := strings.Join([]string{data, "client", "client-id"}, string(os.PathSeparator))
+	if _, err := os.Stat(clientID); err == nil {
+		if err := os.Remove(clientID); err != nil {
+			log.Fatalf("unable to remove client-id (%s)", clientID)
+		}
+	}
+	secretID := strings.Join([]string{data, "client", "secret-id"}, string(os.PathSeparator))
+	if _, err := os.Stat(secretID); err == nil {
+		if err := os.Remove(secretID); err != nil {
+			log.Fatalf("unable to remove secret-id (%s)", secretID)
+		}
+	}
+}
+
 func main() {
 	control := flag.String("control", "", fmt.Sprintf("Service control command [%q].", service.ControlAction))
 	cfg := flag.String("cfg", "config.hcl", "The name of the Nomad configuration file.")
@@ -113,10 +136,13 @@ func main() {
 		}
 		exe, _ := findFile(wd, "nomad*")
 		config, _ := findFile(wd, *cfg)
+		data := strings.Join([]string{wd, "data"}, string(os.PathSeparator))
+		cleanup(data)
 		prg = &nomad{
 			path:    exe,
 			verbose: verbose,
 			config:  config,
+			data:    data,
 			exit:    make(chan struct{}, 1),
 		}
 	}
