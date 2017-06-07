@@ -34,15 +34,9 @@ func (p *program) Start(s service.Service) error {
 
 func (p *program) Stop(s service.Service) error {
 	close(p.exit)
-	node := p.node()
-	status, err := client.Drain(p.nomad, node.ID, true)
-	if err != nil {
-		p.logger.Error("error enabling node-drain.")
-		return err
-	}
-	if status != http.StatusOK {
-		p.logger.Errorf("error enable node-drain; returned %v status code.", s)
-		return errors.New("error enabling node-drain")
+	if _, err := client.FindJob(p.nomad, "clarify"); err != nil {
+		// If we find clarify running, drain node:
+		return p.drain()
 	}
 	p.logger.Info("Stopped Clarify")
 	return nil
@@ -89,6 +83,7 @@ func (p *program) pollJob() <-chan struct{} {
 					p.logger.Error("clarify job not found")
 					ticker.Stop()
 					close(stopped)
+					return
 				}
 				n, err := client.HostID(p.nomad, &p.hostname)
 				if err != nil {
@@ -102,6 +97,20 @@ func (p *program) pollJob() <-chan struct{} {
 		}
 	}()
 	return stopped
+}
+
+func (p *program) drain() error {
+	node := p.node()
+	status, err := client.Drain(p.nomad, node.ID, true)
+	if err != nil {
+		p.logger.Error("error enabling node-drain.")
+		return err
+	}
+	if status != http.StatusOK {
+		p.logger.Errorf("error enable node-drain; returned %v status code.", status)
+		return errors.New("error enabling node-drain")
+	}
+	return nil
 }
 
 func (p *program) launchClarify() (bool, error) {
